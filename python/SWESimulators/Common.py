@@ -490,6 +490,8 @@ cell mid-points.
 """
 class Bathymetry:
     
+    ### TODO: Refactor class so that variables are named H, not B.
+    
     def __init__(self, cl_ctx, cl_queue, nx, ny, halo_x, halo_y, Bi_host, \
                  boundary_conditions=BoundaryConditions(), \
                  block_width=16, block_height=16):

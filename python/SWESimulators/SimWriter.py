@@ -274,6 +274,7 @@ class SimNetCDFWriter:
         if not self.ignore_ghostcells:
             self.nc_H[0, :] = self.H
         else:
+            ## TODO: These slices are completely wrong - use sim's ghost cells
             self.nc_H[0, :] = self.H[1:-1, 1:-1]
         
         self.nc_eta = self.ncfile.createVariable('eta', np.dtype('float32').char, ('time', 'y', 'x'), zlib=True)
@@ -336,12 +337,13 @@ class SimNetCDFWriter:
         self.ncfile.close()
         
         
-
+    
     def writeTimestep(self, sim):
         eta, hu, hv = sim.download()
         if (self.ignore_ghostcells):
             
             self.nc_time[self.i] = sim.t
+            ## TODO: These slices are completely wrong - use sim's ghost cells
             self.nc_eta[self.i, :] = eta[1:-1, 1:-1]
             self.nc_hu[self.i, :] = hu[1:-1, 1:-2]
             self.nc_hv[self.i, :] = hv[1:-2, 1:-1]
