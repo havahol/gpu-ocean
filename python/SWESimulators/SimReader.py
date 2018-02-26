@@ -35,6 +35,10 @@ class SimNetCDFReader:
         
         self.filename = filename
         self.ignore_ghostcells = ignore_ghostcells
+        if (self.get('ignore_ghostcells') == "True") and ignore_ghostcells:
+            self.ignore_ghostcells = False
+        if self.get('ignore_ghostcells') and not ignore_ghostcells:
+            print("WARNING: Ghost cells don't exist in given file")
         
         self.ncfile = Dataset(filename, 'r')
         
@@ -47,10 +51,21 @@ class SimNetCDFReader:
         self.text_font_size = 12
         
     def get(self, attr):
+        if attr == "y_zero_reference_cell":
+            return self.getYZeroReferenceCell()
         try:
             return self.ncfile.getncattr(attr)
         except:
             return "not found"
+        
+    def getYZeroReferenceCell(self):
+        orig_y_zero_reference_cell = self.ncfile.getncattr('y_zero_reference_cell')
+        if self.ignore_ghostcells:
+            ghost_cells_south = self.ncfile.getncattr('ghost_cells_south')
+            return orig_y_zero_reference_cell - ghost_cells_south
+        else:
+            return orig_y_zero_reference_cell
+            
         
     def printVariables(self):
         for var in self.ncfile.variables:
@@ -91,6 +106,9 @@ class SimNetCDFReader:
     
     def getH(self):
         H = self.ncfile.variables['H'][0, :, :]
+        if self.ignore_ghostcells:
+            H = H[self.ghostCells[2]:-self.ghostCells[0], \
+                  self.ghostCells[3]:-self.ghostCells[1]]
         return H
 
     def getEtaAtTimeStep(self, index):
