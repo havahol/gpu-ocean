@@ -25,7 +25,7 @@ along with this program.  If not, see <http://www.gnu.org/licenses/>.
 #Import packages we need
 import numpy as np
 import pyopencl as cl #OpenCL in Python
-import Common, SimWriter, SimReader
+import Common, SimWriter
 import gc
 
 
@@ -43,22 +43,21 @@ class CDKLM16:
 
     """
     Initialization routine
-    eta0: Water level incl ghost cells, (nx+4)*(ny+4) cells
+    h0: Water depth incl ghost cells, (nx+4)*(ny+4) cells
     u0: Initial momentum along x-axis incl ghost cells, (nx+4)*(ny+4) cells
     v0: Initial momentum along y-axis incl ghost cells, (nx+4)*(ny+4) cells
-    Hi: Equilibrium water depth defined on cell corners, (nx+5)*(ny+5) corners
+    Bi: Bottom topography defined on cell corners, (nx+5)*(ny+5) corners
     nx: Number of cells along x-axis
     ny: Number of cells along y-axis
     dx: Grid cell spacing along x-axis (20 000 m)
     dy: Grid cell spacing along y-axis (20 000 m)
     dt: Size of each timestep (90 s)
     g: Gravitational accelleration (9.81 m/s^2)
-    f: Coriolis parameter (1.2e-4 s^1), effectively as f = f + beta*y
+    f: Coriolis parameter (1.2e-4 s^1)
     r: Bottom friction coefficient (2.4e-3 m/s)
     theta: minmod reconstruction parameter
     rk_order: Order of Runge Kutta method {1,2*,3}
-    coriolis_beta: Coriolis linear factor -> f = f + beta*y
-    y_zero_reference_cell: The cell representing y_0 in the above, defined as the lower face of the cell.
+    dim_split: {0*: no split, 1:Godunov split, 2: Strang split}
     wind_stress: Wind stress parameters
     boundary_conditions: Boundary conditions object
     h0AsWaterElevation: True if h0 is described by the surface elevation, and false if h0 is described by water depth
@@ -67,21 +66,17 @@ class CDKLM16:
     """
     def __init__(self, \
                  cl_ctx, \
-                 eta0, hu0, hv0, \
-                 Hi, \
+                 h0, hu0, hv0, \
+                 Bi, \
                  nx, ny, \
                  dx, dy, dt, \
                  g, f, r, \
-                 t=0.0, \
-                 theta=1.3, rk_order=2, \
-                 coriolis_beta=0.0, \
-                 y_zero_reference_cell = 0, \
+                 theta=1.3, rk_order=2, dim_split=0, \
                  wind_stress=Common.WindStressParams(), \
                  boundary_conditions=Common.BoundaryConditions(), \
-                 h0AsWaterElevation=False, \
+                 h0AsWaterElevation=True, \
                  reportGeostrophicEquilibrium=False, \
                  write_netcdf=False, \
-                 double_precision = False, \
                  block_width=16, block_height=16):
         
         self.cl_ctx = cl_ctx
@@ -89,33 +84,23 @@ class CDKLM16:
         #Create an OpenCL command queue
         self.cl_queue = cl.CommandQueue(self.cl_ctx)
         self.A = "NA"  # Eddy viscocity coefficient
-
-        ## After changing from (h, B) to (eta, H), several of the simulator settings used are wrong. This check will help detect that.
-        if ( np.sum(eta0 - Hi[:-1, :-1] > 0) > nx):
-            assert(False), "It seems you are using water depth/elevation h and bottom topography B, while you should use water level eta and equillibrium depth H."
         
         #Get kernels
-        self.kernel = None
-        if double_precision:
-            self.kernel = Common.get_kernel(self.cl_ctx, "CDKLM16_double_kernel.opencl", block_width, block_height)
-        else:
-            self.kernel = Common.get_kernel(self.cl_ctx, "CDKLM16_kernel.opencl", block_width, block_height)
+        self.kernel = Common.get_kernel(self.cl_ctx, "CDKLM16_kernel.opencl", block_width, block_height)
 
         self.ghost_cells_x = 2
         self.ghost_cells_y = 2
         ghost_cells_x = 2
         ghost_cells_y = 2
-        self.y_zero_reference_cell = np.float32(2 + y_zero_reference_cell)
         
         # Boundary conditions
         self.boundary_conditions = boundary_conditions
         if (boundary_conditions.isSponge()):
             nx = nx + boundary_conditions.spongeCells[1] + boundary_conditions.spongeCells[3] - 2*self.ghost_cells_x
             ny = ny + boundary_conditions.spongeCells[0] + boundary_conditions.spongeCells[2] - 2*self.ghost_cells_y
-            self.y_zero_reference_cell = np.float32(boundary_conditions.spongeCells[2] + y_zero_reference_cell)
         
         #Create data by uploading to device
-        self.cl_data = Common.SWEDataArakawaA(self.cl_ctx, nx, ny, ghost_cells_x, ghost_cells_y, eta0, hu0, hv0)
+        self.cl_data = Common.SWEDataArakawaA(self.cl_ctx, nx, ny, ghost_cells_x, ghost_cells_y, h0, hu0, hv0)
 
         ## Allocating memory for geostrophical equilibrium variables
         self.reportGeostrophicEquilibrium = np.int32(reportGeostrophicEquilibrium)
@@ -125,13 +110,30 @@ class CDKLM16:
         self.geoEq_Ly = Common.OpenCLArray2D(cl_ctx, nx, ny, ghost_cells_x, ghost_cells_y, dummy_zero_array)
 
         #Bathymetry
-        self.bathymetry = Common.Bathymetry(self.cl_ctx, self.cl_queue, nx, ny, ghost_cells_x, ghost_cells_y, Hi, boundary_conditions)
+        self.bathymetry = Common.Bathymetry(self.cl_ctx, self.cl_queue, nx, ny, ghost_cells_x, ghost_cells_y, Bi, boundary_conditions)
 
-        assert( rk_order < 4 or rk_order > 0 ), "Only 1st, 2nd and 3rd order Runge Kutta supported"
+        assert( rk_order < 5 or rk_order > 0 ), "Only 1st, 2nd and 3rd order Runge Kutta supported"
+        assert( dim_split > -1 and dim_split < 3), "Only values 0, 1, 2 allowed for dimensional split"
 
-        if (rk_order == 3):
-            assert(r == 0.0), "3rd order Runge Kutta supported only without friction"
         
+        self.rk3_data = None
+        if (rk_order > 2):
+            assert(r == 0.0), "3rd order Runge Kutta supported only without friction"
+
+            # Create two more buffers based on the initial data, for use in 3rd order
+            # (or higher) Runge Kutta methods.
+            self.rk3_data = Common.SWEDataArakawaA(self.cl_ctx, nx, ny, \
+                                                   ghost_cells_x, ghost_cells_y, \
+                                                   h0, hu0, hv0)
+            #print "Uploaded extra rk3 data"
+        else:
+            # Put dummy data in the additional buffers:
+            dummy_rk3_data = np.zeros((1,1), dtype=np.float32, order='C')
+            self.rk3_data = Common.SWEDataArakawaA(self.cl_ctx, 1, 1, 0, 0, \
+                                                   dummy_rk3_data, dummy_rk3_data, \
+                                                   dummy_rk3_data)
+            #print "Made dummy data"
+                    
         #Save input parameters
         #Notice that we need to specify them in the correct dataformat for the
         #OpenCL kernel
@@ -145,12 +147,11 @@ class CDKLM16:
         self.r = np.float32(r)
         self.theta = np.float32(theta)
         self.rk_order = np.int32(rk_order)
-        self.coriolis_beta = np.float32(coriolis_beta)
+        self.dim_split = np.int32(dim_split)
         self.wind_stress = wind_stress
         self.h0AsWaterElevation = h0AsWaterElevation
 
-        self.hasDrifters = False
-        self.drifters = None
+
         
         #Initialize time
         self.t = np.float32(0.0)
@@ -177,69 +178,8 @@ class CDKLM16:
         self.sim_writer = None
         if self.write_netcdf:
             self.sim_writer = SimWriter.SimNetCDFWriter(self)
-           
-        
-    """
-    Initialize and hotstart simulation from nc-file.
-    cont_write_netcdf: Continue to write the results after each superstep to a new netCDF file
-    filename: Continue simulation based on parameters and last timestep in this file
-    """
-    @classmethod
-    def fromfilename(cls, cl_ctx, filename, cont_write_netcdf=True):
-        # open nc-file
-        sim_reader = SimReader.SimNetCDFReader(filename, ignore_ghostcells=False)
-        sim_name = str(sim_reader.get('simulator_short'))
-        assert sim_name == "CDKLM16", \
-               "Trying to initialize a CDKLM16 simulator with netCDF file based on " \
-               + sim_name + " results."
-        
-        # read parameters
-        nx = sim_reader.get("nx")
-        ny = sim_reader.get("ny")
+            
 
-        dx = sim_reader.get("dx")
-        dy = sim_reader.get("dy")
-
-        width = nx * dx
-        height = ny * dy
-
-        dt = sim_reader.get("dt")
-        g = sim_reader.get("g")
-        r = sim_reader.get("bottom_friction_r")
-        f = sim_reader.get("coriolis_force")
-        beta = sim_reader.get("coriolis_beta")
-        
-        minmodTheta = sim_reader.get("minmod_theta")
-        timeIntegrator = sim_reader.get("time_integrator")
-        y_zero_reference_cell = sim_reader.get("y_zero_reference_cell")        
-        
-        wind_stress_type = sim_reader.get("wind_stress_type")
-        wind = Common.WindStressParams(type=wind_stress_type)
-
-        boundaryConditions = Common.BoundaryConditions( \
-            sim_reader.getBC()[0], sim_reader.getBC()[1], \
-            sim_reader.getBC()[2], sim_reader.getBC()[3], \
-            sim_reader.getBCSpongeCells())
-
-        Hi = sim_reader.getH();
-        
-        # get last timestep (including simulation time of last timestep)
-        eta0, hu0, hv0, time0 = sim_reader.getLastTimeStep()
-        
-        return cls(cl_ctx, \
-                 eta0, hu0, hv0, \
-                 Hi, \
-                 nx, ny, \
-                 dx, dy, dt, \
-                 g, f, r, \
-                 t=time0, \
-                 theta=minmodTheta, rk_order=timeIntegrator, \
-                 coriolis_beta=beta, \
-                 y_zero_reference_cell = y_zero_reference_cell, \
-                 wind_stress=wind, \
-                 boundary_conditions=boundaryConditions, \
-                 write_netcdf=cont_write_netcdf)
-    
     """
     Clean up function
     """
@@ -248,6 +188,7 @@ class CDKLM16:
             self.sim_writer.__exit__(0,0,0)
             self.write_netcdf = False
         self.cl_data.release()
+        self.rk3_data.release()
         self.geoEq_uxpvy.release()
         self.geoEq_Kx.release()
         self.geoEq_Ly.release()
@@ -255,15 +196,6 @@ class CDKLM16:
         self.h0AsWaterElevation = False # Quick fix to stop waterDepthToElevation conversion
         gc.collect() # Force run garbage collection to free up memory
         
-        
-    def attachDrifters(self, drifters):
-        ### Do the following type of checking here:
-        #assert isinstance(drifters, SingleGPUPassiveDrifterEnsemble)
-        #assert drifters.isInitialized()
-        
-        self.drifters = drifters
-        self.hasDrifters = True
-        self.drifters.setCLQueue(self.cl_queue)
     
     """
     Function which steps n timesteps
@@ -271,8 +203,7 @@ class CDKLM16:
     def step(self, t_end=0.0):
         n = int(t_end / self.dt + 1)
 
-        if self.t == 0:
-            self.bc_kernel.boundaryCondition(self.cl_queue, \
+        self.bc_kernel.boundaryCondition(self.cl_queue, \
                 self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0)
         
         for i in range(0, n):        
@@ -281,69 +212,67 @@ class CDKLM16:
             if (local_dt <= 0.0):
                 break
 
-            #self.bc_kernel.boundaryCondition(self.cl_queue, \
-            #            self.cl_data.h1, self.cl_data.hu1, self.cl_data.hv1)
+            # Forward Euler
+            if (self.rk_order == 1 and self.dim_split == 0):
+                self.forwardEuler(local_dt)
             
             # 2nd order Runge Kutta
-            if (self.rk_order == 2):
-
-                self.callKernel(self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0, \
-                                self.cl_data.h1, self.cl_data.hu1, self.cl_data.hv1, \
-                                local_dt, 0)
-
-                self.bc_kernel.boundaryCondition(self.cl_queue, \
-                        self.cl_data.h1, self.cl_data.hu1, self.cl_data.hv1)
-
-                self.callKernel(self.cl_data.h1, self.cl_data.hu1, self.cl_data.hv1, \
-                                self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0, \
-                                local_dt, 1)
-
-                self.bc_kernel.boundaryCondition(self.cl_queue, \
-                        self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0)
-                
-            elif (self.rk_order == 1):
-                self.callKernel(self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0, \
-                                self.cl_data.h1, self.cl_data.hu1, self.cl_data.hv1, \
-                                local_dt, 0)
-                                
-                self.cl_data.swap()
-
-                self.bc_kernel.boundaryCondition(self.cl_queue, \
-                        self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0)
+            elif (self.rk_order == 2 and self.dim_split == 0):
+                self.rungeKutta2(local_dt)
+              
 
             # 3rd order RK method:
-            elif (self.rk_order == 3):
+            elif (self.rk_order == 3 and self.dim_split == 0):
+                self.rungeKutta3(local_dt)
 
-                self.callKernel(self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0, \
-                                self.cl_data.h1, self.cl_data.hu1, self.cl_data.hv1, \
-                                local_dt, 0)
-                
-                self.bc_kernel.boundaryCondition(self.cl_queue, \
-                        self.cl_data.h1, self.cl_data.hu1, self.cl_data.hv1)
+            # 4rd order RK method:
+            elif (self.rk_order == 4 and self.dim_split == 0):
+                self.rungeKutta4(local_dt)
 
-                self.callKernel(self.cl_data.h1, self.cl_data.hu1, self.cl_data.hv1, \
-                                self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0, \
-                                local_dt, 1)
+            # Godunov splitting with Forward Euler
+            elif(self.rk_order == 1 and self.dim_split == 1):
+                #print "Godunov!"
+                self.forwardEuler(local_dt, x_sweep=0, y_sweep=1)
+                self.forwardEuler(local_dt,  x_sweep=1, y_sweep=0)
+                
+            # Godunov splitting with 2nd order RK
+            elif(self.rk_order == 2 and self.dim_split == 1):
+                #print "Godunov!"
+                self.rungeKutta2(local_dt, x_sweep=0, y_sweep=1)
+                self.rungeKutta2(local_dt,  x_sweep=1, y_sweep=0)
 
-                self.bc_kernel.boundaryCondition(self.cl_queue, \
-                        self.cl_data.h1, self.cl_data.hu1, self.cl_data.hv1)
+            # Godunov splitting with 3rd order RK
+            elif(self.rk_order == 3 and self.dim_split == 1):
+                #print "Godunov!"
+                self.rungeKutta3(local_dt, x_sweep=0, y_sweep=1)
+                self.rungeKutta3(local_dt,  x_sweep=1, y_sweep=0)
+                
+            # Forward Euler with Strange splitting:
+            elif (self.rk_order == 1 and self.dim_split == 2):
+                half_dt = np.float32(local_dt/2.0)
+                self.forwardEuler(half_dt,  x_sweep=1, y_sweep=0)
+                self.forwardEuler(local_dt, x_sweep=0, y_sweep=1)
+                self.forwardEuler(half_dt,  x_sweep=1, y_sweep=0)
+                
+            # 2nd order RK with Strange splitting:
+            elif(self.rk_order == 2 and self.dim_split == 2):
+                # half x-sweep
+                half_dt = np.float32(local_dt/2.0)
+                self.rungeKutta2(half_dt,  x_sweep=1, y_sweep=0)
+                self.rungeKutta2(local_dt, x_sweep=0, y_sweep=1)
+                #self.rungeKutta2(local_dt, x_sweep=0, y_sweep=0)
+                self.rungeKutta2(half_dt,  x_sweep=1, y_sweep=0)
 
-                self.callKernel(self.cl_data.h1, self.cl_data.hu1, self.cl_data.hv1, \
-                                self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0, \
-                                local_dt, 2)
+            # 3rd order RK with Strange splitting:
+            elif(self.rk_order == 3 and self.dim_split == 2):
+                # half x-sweep
+                half_dt = np.float32(local_dt/2.0)
+                self.rungeKutta3(half_dt,  x_sweep=1, y_sweep=0)
+                self.rungeKutta3(local_dt, x_sweep=0, y_sweep=1)
+                #self.rungeKutta3(local_dt, x_sweep=0, y_sweep=0)
+                self.rungeKutta3(half_dt,  x_sweep=1, y_sweep=0)
                 
-                self.bc_kernel.boundaryCondition(self.cl_queue, \
-                        self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0)
-                
-                
-            if self.hasDrifters:
-                self.drifters.drift(self.cl_data.h0, self.cl_data.hu0, \
-                                    self.cl_data.hv0, np.float32(10), \
-                                    self.nx, self.ny, self.dx, self.dy, \
-                                    local_dt, \
-                                    np.int32(2), np.int32(2))
-
-                
+           
             self.t += local_dt
             
         if self.write_netcdf:
@@ -351,28 +280,130 @@ class CDKLM16:
             
         return self.t
 
+    def forwardEuler(self, local_dt,  x_sweep=0, y_sweep=0):
+        #print "forward Euler!!!"
+        self.callKernel(self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0, \
+                        self.cl_data.h1, self.cl_data.hu1, self.cl_data.hv1, \
+                        local_dt, 0, x_sweep, y_sweep)
+                                
+        self.cl_data.swap()
 
+    def rungeKutta2(self, local_dt, x_sweep=0, y_sweep=0):
+        self.callKernel(self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0, \
+                        self.cl_data.h1, self.cl_data.hu1, self.cl_data.hv1, \
+                        local_dt, 0, x_sweep, y_sweep)
+    
+        self.callKernel(self.cl_data.h1, self.cl_data.hu1, self.cl_data.hv1, \
+                        self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0, \
+                        local_dt, 1, x_sweep, y_sweep)
+    
+    def rungeKutta3(self, local_dt, x_sweep=0, y_sweep=0):
+        # h0: Q^n
+        self.callKernel(self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0, \
+                        self.cl_data.h1, self.cl_data.hu1, self.cl_data.hv1, \
+                        local_dt, 0, x_sweep, y_sweep)
+        # h0: Q^n
+        # h1: Q^(1)
+        self.callKernel(self.cl_data.h1, self.cl_data.hu1, self.cl_data.hv1, \
+                        self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0, \
+                        local_dt, 1, x_sweep, y_sweep,
+                        h_rk3 =  self.rk3_data.h0, \
+                        hu_rk3 = self.rk3_data.hu0, \
+                        hv_rk3 = self.rk3_data.hv0 )
+        # h0: Q^n
+        # h1: Q^(1)
+        # rk3_data.h0: Q^(2)
+        self.callKernel(self.rk3_data.h0, self.rk3_data.hu0, self.rk3_data.hv0, \
+                        self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0, \
+                        local_dt, 2, x_sweep, y_sweep)
+        # h0: Q^n+1
+
+
+    def rungeKutta4(self, local_dt, x_sweep=0, y_sweep=0):
+        # h0: Q^n
+        self.callKernel(self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0, \
+                        self.cl_data.h1, self.cl_data.hu1, self.cl_data.hv1, \
+                        local_dt, 0, x_sweep, y_sweep)
+        # h0: Q^n
+        # h1: Q^(1)
+        self.callKernel(self.cl_data.h1, self.cl_data.hu1, self.cl_data.hv1, \
+                        self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0, \
+                        local_dt, 1, x_sweep, y_sweep,
+                        h_rk3 =  self.rk3_data.h0, \
+                        hu_rk3 = self.rk3_data.hu0, \
+                        hv_rk3 = self.rk3_data.hv0 )
+        # h0: Q^n
+        # h1: Q^(1)
+        # rk3_data.h0: Q^(2)
+        self.callKernel(self.rk3_data.h0, self.rk3_data.hu0, self.rk3_data.hv0, \
+                        self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0, \
+                        local_dt, 2, x_sweep, y_sweep,
+                        h_rk3 =  self.rk3_data.h1, \
+                        hu_rk3 = self.rk3_data.hu1, \
+                        hv_rk3 = self.rk3_data.hv1 )
+        # h0: Q^n
+        # h1: Q^(1)
+        # rk3_data.h0: Q^(2)
+        # rk3_data.h1: Q^(3)
+        self.callKernel(self.rk3_data.h1, self.rk3_data.hu1, self.rk3_data.hv1, \
+                        self.cl_data.h0, self.cl_data.hu0, self.cl_data.hv0, \
+                        local_dt, 3, x_sweep, y_sweep,
+                        h_rk3 =  self.cl_data.h1, \
+                        hu_rk3 = self.cl_data.hu1, \
+                        hv_rk3 = self.cl_data.hv1,\
+                        h_rk4 =  self.rk3_data.h0, \
+                        hu_rk4 = self.rk3_data.hu0, \
+                        hv_rk4 = self.rk3_data.hv0 )
+        # h0: Q^n+1 
+    
     def callKernel(self, \
                    h_in, hu_in, hv_in, \
                    h_out, hu_out, hv_out, \
-                   local_dt, rk_step):
+                   local_dt, rk_step, \
+                   x_sweep, y_sweep, \
+                   h_rk3  = None, \
+                   hu_rk3 = None, \
+                   hv_rk3 = None, \
+                   h_rk4  = None, \
+                   hu_rk4 = None, \
+                   hv_rk4 = None, \
+    ):
+        if h_rk3 is None:
+            h_rk3 = self.rk3_data.h0
+        if hu_rk3 is None:
+            hu_rk3 = self.rk3_data.hu0
+        if hv_rk3 is None:
+            hv_rk3 = self.rk3_data.hv0
+        if h_rk4 is None:
+            h_rk4 = self.rk3_data.h1
+        if hu_rk4 is None:
+            hu_rk4 = self.rk3_data.hu1
+        if hv_rk4 is None:
+            hv_rk4 = self.rk3_data.hv1
+        
+            
         self.kernel.swe_2D(self.cl_queue, self.global_size, self.local_size, \
                            self.nx, self.ny, \
                            self.dx, self.dy, local_dt, \
                            self.g, \
                            self.theta, \
                            self.f, \
-                           self.coriolis_beta, \
-                           self.y_zero_reference_cell, \
                            self.r, \
                            self.rk_order, \
                            np.int32(rk_step), \
+                           np.int32(x_sweep), np.int32(y_sweep), \
                            h_in.data, h_in.pitch, \
                            hu_in.data, hu_in.pitch, \
                            hv_in.data, hv_in.pitch, \
                            h_out.data, h_out.pitch, \
                            hu_out.data, hu_out.pitch, \
                            hv_out.data, hv_out.pitch, \
+                           h_rk3.data, h_rk3.pitch, \
+                           hu_rk3.data, hu_rk3.pitch, \
+                           hv_rk3.data, hv_rk3.pitch, \
+                           h_rk4.data, h_rk4.pitch, \
+                           hu_rk4.data, hu_rk4.pitch, \
+                           hv_rk4.data, hv_rk4.pitch, \
                            self.bathymetry.Bi.data, self.bathymetry.Bi.pitch, \
                            self.bathymetry.Bm.data, self.bathymetry.Bm.pitch, \
                            self.wind_stress.type, \
@@ -385,6 +416,15 @@ class CDKLM16:
                            self.geoEq_uxpvy.data, self.geoEq_uxpvy.pitch, \
                            self.geoEq_Kx.data, self.geoEq_Kx.pitch, \
                            self.geoEq_Ly.data, self.geoEq_Ly.pitch )
+
+        ## And boundary conditions on output, with one exception:
+        if (self.rk_order == 3 and rk_step == 1) or \
+           (self.rk_order == 4 and (rk_step == 1 or rk_step == 2)):
+            self.bc_kernel.boundaryCondition(self.cl_queue, \
+                                             h_rk3, hu_rk3, hv_rk3)    
+        else:
+            self.bc_kernel.boundaryCondition(self.cl_queue, \
+                                             h_out, hu_out, hv_out)
 
     
     """
