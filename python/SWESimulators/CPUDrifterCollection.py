@@ -129,5 +129,34 @@ class CPUDrifterCollection(BaseDrifterCollection.BaseDrifterCollection):
             pass
     
     
-    
-  
+    def cpuDrift(self, eta, hu, hv, H0, nx, ny, dx, dy, dt, sensitivity=1):
+        
+        x_zero_ref = 2
+        y_zero_ref = 2
+        waterHeight = H0
+        
+
+        numParticles = self.positions.shape[0]
+        # Loop over particles
+        for i in range(numParticles):
+            x0, y0 = self.positions[i,0], self.positions[i,1]
+
+            # First, find which cell each particle is in
+            cell_id_x = int(np.ceil(x0/dx) + x_zero_ref)
+            cell_id_y = int(np.ceil(y0/dy) + y_zero_ref)
+
+            h = waterHeight + eta[cell_id_y, cell_id_x]
+            u = hu[cell_id_y, cell_id_x]/h
+            v = hv[cell_id_y, cell_id_x]/h
+
+            x1 = sensitivity*u*dt + x0
+            y1 = sensitivity*v*dt + y0
+
+            self.positions[i,0] = x1
+            self.positions[i,1] = y1
+
+
+        # Check what we assume is periodic boundary conditions    
+        self.enforceBoundaryConditions()
+        #applyPeriodicBoundaryConditionsToParticles(positions, nx, ny, dx, dy)
+
