@@ -10,7 +10,7 @@ from testUtils import *
 sys.path.insert(0, '../')
 from SWESimulators import Common
 from SWESimulators.GPUDrifterCollection import *
-from dataAssimilation.BaseDrifterTest import BaseDrifterTest
+from driftTests.BaseDrifterTest import BaseDrifterTest
 
 
 

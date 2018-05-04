@@ -7,14 +7,12 @@ import xmlrunner
 # $ sudo easy_install unittest-xml-reporting
 
 #import testUtils
-from dataAssimilation.OceanStateNoise_test import OceanStateNoiseTest
-from dataAssimilation.DrifterEnsemble_test import DrifterEnsembleTest
-from dataAssimilation.CPUDrifterEnsemble_test import CPUDrifterEnsembleTest
+from driftTests.CPUDrifter_test import CPUDrifterTest
+from driftTests.GPUDrifter_test import GPUDrifterTest
 
 def printSupportedTests():
     print ("Supported tests:")
-    print ("0: All, 1: DrifterEnsembleTest, "
-           + "2: CPUDrifterEnsembleTest, 3: OceanStateNoise")
+    print ("0: All, 1: CPUDrifter, 2: GPUDrifter" )
 
 
 if (len(sys.argv) < 2):
@@ -37,14 +35,11 @@ if (jenkins):
 # Define the tests that will be part of our test suite:
 test_classes_to_run = None
 if tests == 0:
-    test_classes_to_run = [DrifterEnsembleTest, CPUDrifterEnsembleTest,
-                           OceanStateNoiseTest]
+    test_classes_to_run = [CPUDrifterTest, GPUDrifterTest]
 elif tests == 1:
-    test_classes_to_run = [DrifterEnsembleTest]
+    test_classes_to_run = [CPUDrifterTest]
 elif tests == 2:
-    test_classes_to_run = [CPUDrifterEnsembleTest]
-elif tests == 3:
-    test_classes_to_run = [OceanStateNoiseTest]
+    test_classes_to_run = [GPUDrifterTest]
 else:
     print ("Error: " + str(tests) + " is not a supported test number...")
     printSupportedTests()
