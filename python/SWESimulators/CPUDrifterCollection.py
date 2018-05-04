@@ -88,26 +88,6 @@ class CPUDrifterCollection(BaseDrifterCollection.BaseDrifterCollection):
     def setObservationPosition(self, newObservationPosition):
         np.copyto(self.positions[-1,:], newObservationPosition)
         
-    ### Implementation of other abstract functions
-    
-    def _enforceBoundaryConditionsOnPosition(self, x, y):
-        """
-        Maps the given coordinate to a coordinate within the domain. This
-        function assumes that periodic boundary conditions are used, and 
-        should be considered as a private function.
-        """
-        ### TODO: SWAP the if's with while's?
-        # Check what we assume is periodic boundary conditions
-        if x < 0:
-            x = self.domain_size_x + x
-        if y < 0:
-            y = self.domain_size_x + y
-        if x > self.domain_size_x:
-            x = x - self.domain_size_x
-        if y > self.domain_size_y:
-            y = y - self.domain_size_y
-        return x, y
-    
     
     def drift(self, eta, hu, hv, H0, nx, ny, dx, dy, dt, \
               x_zero_ref, y_zero_ref, sensitivity=1, doPrint=False):
