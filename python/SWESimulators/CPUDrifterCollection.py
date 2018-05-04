@@ -92,7 +92,9 @@ class CPUDrifterCollection(BaseDrifterCollection.BaseDrifterCollection):
     
     def _enforceBoundaryConditionsOnPosition(self, x, y):
         """
-        Maps the given coordinate to a coordinate within the domain. This function assumes that periodic boundary conditions are used, and should be considered as a private function.
+        Maps the given coordinate to a coordinate within the domain. This
+        function assumes that periodic boundary conditions are used, and 
+        should be considered as a private function.
         """
         ### TODO: SWAP the if's with while's?
         # Check what we assume is periodic boundary conditions
@@ -107,10 +109,62 @@ class CPUDrifterCollection(BaseDrifterCollection.BaseDrifterCollection):
         return x, y
     
     
+    def drift(self, eta, hu, hv, H0, nx, ny, dx, dy, dt, \
+              x_zero_ref, y_zero_ref, sensitivity=1, doPrint=False):
+        """
+        Using the eta, hu, hv and H0 fields on the given grid to move
+        all particles dt forward in time.
+        
+        Function copied from notebook where it first was implemented. 
+        
+        Assumes halo of 2 ghost cells and periodic boundary conditions.
+        """
+        # Change positions by reference
+        positions = self.positions
+
+        totNumDrifters = self.positions.shape[0]
+        # Loop over all drifters (drifters + obs)
+        for i in range(totNumDrifters):
+            if doPrint: print "---------- Particle " + str(i) + " ---------------"
+            x0, y0 = positions[i,0], positions[i,1]
+            if doPrint: print "(x0, y0): ", (x0,y0)
+
+            # First, find which cell each particle is in
+            cell_id_x = int(np.ceil(x0/dx) + x_zero_ref)
+            cell_id_y = int(np.ceil(y0/dy) + y_zero_ref)
+            
+
+            if (cell_id_x < 0 or cell_id_x > nx + 4 or cell_id_y < 0 or cell_id_y > ny + 4):
+                print "ERROR! Cell id " + str((cell_id_x, cell_id_y)) + " is outside of the domain!"
+                print "\t\Particle position is: " + str((x0, y0))
+
+            if doPrint: print "cell values in x-direction: ", ((cell_id_x-2-0.5)*dx, (cell_id_x-2+0.5)*dx)
+            if doPrint: print "cell values in y-direction: ", ((cell_id_y-2-0.5)*dy, (cell_id_y-2+0.5)*dy)
+
+            h = H0 + eta[cell_id_y, cell_id_x]
+            u = hu[cell_id_y, cell_id_x]/h
+            v = hv[cell_id_y, cell_id_x]/h
+
+            if doPrint: print "Velocity: ", (u, v)
+
+            x1 = sensitivity*u*dt + x0
+            y1 = sensitivity*v*dt + y0
+            if doPrint: print "(x1, y1): ", (positions[i,0], positions[i,1])
+
+            positions[i,0] = x1
+            positions[i,1] = y1
+
+
+        # Check what we assume is periodic boundary conditions    
+        self.enforceBoundaryConditions()
+        #applyPeriodicBoundaryConditionsToParticles(positions, nx, ny, dx, dy)
+    
+    
     def enforceBoundaryConditions(self):
         """
         Enforces boundary conditions on all particles in the ensemble, and the observation.
-        This function should be called whenever particles are moved, to enforce periodic boundary conditions for particles that have left the domain.
+        This function should be called whenever particles are moved, to enforce periodic 
+        boundary conditions for particles that have left the domain.
         """
         
         if (self.boundaryConditions.isPeriodicNorthSouth() and self.boundaryConditions.isPeriodicEastWest()):
