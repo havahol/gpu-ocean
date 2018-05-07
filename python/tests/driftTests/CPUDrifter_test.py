@@ -17,7 +17,7 @@ class CPUDrifterTest(BaseDrifterTest):
         super(CPUDrifterTest, self).setUp()
 
     def tearDown(self):
-        pass
+        super(CPUDrifterTest, self).tearDown()
     
 
     def create_small_drifter_set(self):

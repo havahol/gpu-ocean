@@ -26,7 +26,8 @@ class GPUDrifterTest(BaseDrifterTest):
             self.smallDrifterSet.cleanUp()
         if self.resamplingDrifterSet is not None:
             self.resamplingDrifterSet.cleanUp()
-
+        super(GPUDrifterTest, self).tearDown()
+        
 
     def create_small_drifter_set(self):
         self.smallDrifterSet = GPUDrifterCollection(self.cl_ctx,

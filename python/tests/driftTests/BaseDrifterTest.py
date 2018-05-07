@@ -57,7 +57,6 @@ class BaseDrifterTest(unittest.TestCase):
     def tearDown(self):
         self.cl_ctx = None
         if self.sim is not None:
-            print "HEI! from base tearup"
             self.sim.cleanUp()
             self.sim = None
         #self.smallDrifterSet.cleanUp()
@@ -96,8 +95,6 @@ class BaseDrifterTest(unittest.TestCase):
         self.y_zero_ref = np.int32(2)
 
         
-    def create_ocean_field_with_bathymetry(self):
-        pass
         
     ### Define required functions as abstract ###
 
