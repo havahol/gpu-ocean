@@ -12,7 +12,7 @@ from testUtils import *
 sys.path.insert(0, '../')
 from SWESimulators import Common
 from SWESimulators import DataAssimilationUtils as dautils
-
+from SWESimulators import CDKLM16
 
 
 class BaseDrifterTest(unittest.TestCase):
@@ -46,10 +46,20 @@ class BaseDrifterTest(unittest.TestCase):
         # to be initialized by child class wit resampleNumDrifters only.
 
         self.resamplingVar = 1e-8
+
+        self.nx, self.ny = np.int32(10), np.int32(10)
+        self.dx, self.dy = np.float32(0.5), np.float32(0.5)
+        self.dt = np.float32(2.0)
+
+        self.cl_ctx = None
+        self.sim = None
         
     def tearDown(self):
-        pass
-        #self.cl_ctx = None
+        self.cl_ctx = None
+        if self.sim is not None:
+            print "HEI! from base tearup"
+            self.sim.cleanUp()
+            self.sim = None
         #self.smallDrifterSet.cleanUp()
     
     ### set observation and drifter positions to the test cases
@@ -64,7 +74,33 @@ class BaseDrifterTest(unittest.TestCase):
         self.resamplingDrifterSet.setObservationPosition(self.resamplingDriftersArray[-1,:])
 
 
+    def create_ocean_field(self):
+        dataShape = (self.ny+4, self.nx+4)
+        eta0 = np.zeros(dataShape, dtype=np.float32, order='C');
+        hu0 = np.ones(dataShape, dtype=np.float32, order='C')*0.2;
+        hv0 = np.ones(dataShape, dtype=np.float32, order='C')*0.4;
+        waterDepth = 0.5
+        Hi = np.ones((dataShape[0]+1, dataShape[1]+1), dtype=np.float32, order='C')*waterDepth
+        g = 9.81
+        f = 0.0
+        r = 0.0
+        if self.cl_ctx is  None:
+            self.cl_ctx = make_cl_ctx()
+        self.sim = CDKLM16.CDKLM16(self.cl_ctx,
+                                   eta0, hu0, hv0, Hi,
+                                   self.nx, self.ny, self.dx, self.dy, self.dt,
+                                   g, f, r)
+        self.ddrift_x = 0.8
+        self.ddrift_y = 1.6
+        self.x_zero_ref = np.int32(2)
+        self.y_zero_ref = np.int32(2)
+
+        
+    def create_ocean_field_with_bathymetry(self):
+        pass
+        
     ### Define required functions as abstract ###
+
 
     @abc.abstractmethod
     def create_small_drifter_set(self):
@@ -78,7 +114,9 @@ class BaseDrifterTest(unittest.TestCase):
     def create_large_drifter_set(self, size, domain_x, domain_y):
         pass
 
-        
+    @abc.abstractmethod
+    def issue_drift(self, drifters):
+        pass    
         
     ### START TESTS ###
     
@@ -373,4 +411,25 @@ class BaseDrifterTest(unittest.TestCase):
                          newDrifterPositions)
 
         
+            
+    def test_flat_drift(self):
+        self.create_ocean_field()
+        self.set_positions_small_set()
+        self.smallDrifterSet.setDomainSize(self.nx*self.dx, self.ny*self.dy)
+        self.issue_drift(self.smallDrifterSet)
+        resultsTruth = self.smallPositionSetHost + np.array([[self.ddrift_x, self.ddrift_y]])
+
+        positions = self.smallDrifterSet.getDrifterPositions()
+        self.assertEqual(positions.shape, ((self.numDrifters, 2)))
+        assertListAlmostEqual(self, positions[0,:].tolist(), resultsTruth[0,:].tolist(), 6,
+                              'flat drift, drifter 0')
+        assertListAlmostEqual(self, positions[1,:].tolist(), resultsTruth[1,:].tolist(), 6,
+                              'flat drift, drifter 1')
+        assertListAlmostEqual(self, positions[2,:].tolist(), resultsTruth[2,:].tolist(), 6,
+                              'flat drift, drifter 2')
+
+        observation = self.smallDrifterSet.getObservationPosition()
+        self.assertEqual(observation.shape, ((2,)))
+        assertListAlmostEqual(self, observation.tolist(), resultsTruth[3,:], 6,
+                              'flat drift, observation')
 

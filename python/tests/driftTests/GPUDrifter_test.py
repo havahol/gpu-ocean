@@ -42,5 +42,9 @@ class GPUDrifterTest(BaseDrifterTest):
         return GPUDrifterCollection(self.cl_ctx, size, domain_size_x=domain_x, domain_size_y=domain_y) 
         
 
+    def issue_drift(self, drifters):
+        Hi = np.float32(np.max(self.sim.downloadBathymetry()[0]))
+        drifters.drift(self.sim.cl_data.h0, self.sim.cl_data.hu0, self.sim.cl_data.hv0, Hi,
+                       self.nx, self.ny, self.dx, self.dy, self.dt, self.x_zero_ref, self.y_zero_ref)
 
 

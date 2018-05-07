@@ -31,3 +31,10 @@ class CPUDrifterTest(BaseDrifterTest):
     def create_large_drifter_set(self, size, domain_x, domain_y):
         return CPUDrifterCollection(size, domain_size_x=domain_x, domain_size_y=domain_y)
 
+    
+    def issue_drift(self, drifters):
+        eta, hu, hv = self.sim.download()
+        Hi = self.sim.downloadBathymetry()[0]
+        drifters.drift(eta, hu, hv, np.max(Hi), self.nx, self.ny, self.dx, self.dy, self.dt,
+                       self.x_zero_ref, self.y_zero_ref)
+    
