@@ -260,6 +260,9 @@ class OceanStateNoiseTest(unittest.TestCase):
         
         assert2DListAlmostEqual(self, etaCPU.tolist(), etaFromGPU.tolist(), 6, msg)
 
+        etaCPU = None
+        HCPU = None
+
         
     def test_perturb_eta_periodic(self):
         self.perturb_eta("test_perturb_eta_periodic")
@@ -305,7 +308,11 @@ class OceanStateNoiseTest(unittest.TestCase):
         
         assert2DListAlmostEqual(self, huCPU.tolist(), huFromGPU.tolist(), 5, msg+", hu")
         assert2DListAlmostEqual(self, hvCPU.tolist(), hvFromGPU.tolist(), 5, msg+", hv")
-        
+
+        etaCPU = None
+        huCPU = None
+        hvCPU = None
+        HCPU = None
 
         
     def test_perturb_ocean_periodic(self):
