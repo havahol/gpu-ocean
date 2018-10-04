@@ -60,7 +60,7 @@ class CDKLM16(Simulator.Simulator):
                  write_netcdf=False, \
                  ignore_ghostcells=False, \
                  offset_x=0, offset_y=0, \
-                 block_width=32, block_height=8):
+                 block_width=32, block_height=12):
         """
         Initialization routine
         eta0: Initial deviation from mean sea level incl ghost cells, (nx+2)*(ny+2) cells
@@ -151,10 +151,16 @@ class CDKLM16(Simulator.Simulator):
                 #jit_options=[(cuda.jit_option.MAX_REGISTERS, 39)]
                 }
                 )
-        
+
+        #cuda.Context.set_cache_config(cuda.func_cache.PREFER_EQUAL)
+        #self.logger.info("Cache config is %s", str(cuda.Context.get_cache_config()))
+		
         # Get CUDA functions and define data types for prepared_{async_}call()
         self.swe_2D = self.kernel.get_function("swe_2D")
         self.swe_2D.prepare("iifffffffffiiPiPiPiPiPiPiPiPifi")
+
+        #self.swe_2D.set_cache_config(cuda.func_cache.PREFER_EQUAL)
+	
         self.update_wind_stress(self.kernel, self.swe_2D)
         
         #Create data by uploading to device
