@@ -104,7 +104,7 @@ class CDKLM16(Simulator.Simulator):
         # boundary conditions
         ghost_cells_x = 2
         ghost_cells_y = 2
-        y_zero_reference_cell = 2 + y_zero_reference_cell
+        
         
         # Boundary conditions
         self.boundary_conditions = boundary_conditions
@@ -112,6 +112,8 @@ class CDKLM16(Simulator.Simulator):
             nx = nx + boundary_conditions.spongeCells[1] + boundary_conditions.spongeCells[3] - 2*ghost_cells_x
             ny = ny + boundary_conditions.spongeCells[0] + boundary_conditions.spongeCells[2] - 2*ghost_cells_y
             y_zero_reference_cell = boundary_conditions.spongeCells[2] + y_zero_reference_cell
+        else:
+            y_zero_reference_cell = 2 + y_zero_reference_cell
         
         A = None
         self.max_wind_direction_perturbation = max_wind_direction_perturbation
@@ -137,6 +139,9 @@ class CDKLM16(Simulator.Simulator):
         #     self.interior_domain_indices[3]:self.interior_domain_indices[1] ]
         self.interior_domain_indices = np.array([-2,-2,2,2])
         self._set_interior_domain_from_sponge_cells()
+        
+        print("CDKLM.y_zero_reference_cell: ", self.y_zero_reference_cell)
+
         
         #Get kernels
         self.kernel = gpu_ctx.get_kernel("CDKLM16_kernel.cu", 
