@@ -70,7 +70,8 @@ __device__ float3 CDKLM16_flux(const float3 Qm, float3 Qp, const float g) {
     
     F.x = ((ap*Fm.x - am*Fp.x) + ap*am*(Qp.x-Qm.x))/(ap-am);
     F.y = ((ap*Fm.y - am*Fp.y) + ap*am*(Fp.x-Fm.x))/(ap-am);
-    F.z = (Qm.y + Qp.y > 0) ? Fm.z : Fp.z; //Upwinding to be consistent
+    F.z = ((ap*Fm.z - am*Fp.z) + ap*am*(Qp.x*Qp.z-Qm.x*Qm.z))/(ap-am);
+    //F.z = (Qm.y + Qp.y > 0) ? Fm.z : Fp.z; //Upwinding to be consistent
     
     return F;
 }
