@@ -124,6 +124,11 @@ class IEWPFOcean:
         self.S_host = self._createS(ensemble)
         self.S_device = Common.CUDAArray2D(self.master_stream, 2, 2, 0, 0, self.S_host)
         
+        self.debug = True
+        self.S_manipulated = self._createS(ensemble, manipulate=True)
+        self.variance_manipulation_factor = 0.2 ####  MANIPULATING
+        self.debug = False
+        
         # Create constant localized SVD matrix and copy to the GPU.
         # This matrix is defined for the coarse grid, and ignores all use of the interpolation operator.
         self.localSVD_host, self.localSVD_device = None, None
@@ -296,7 +301,8 @@ class IEWPFOcean:
                 
                     # Apply the SVD covariance structure at the drifter positions on scaled xi and nu
                     self.applySVDtoPerpendicular(ensemble.particles[p], observed_drifter_positions,
-                                                 alpha, beta)
+                                                 self.variance_manipulation_factor*alpha, 
+                                                 self.variance_manipulation_factor*beta)
                     
                     # Add scaled sample from P to the state vector
                     ensemble.particles[p].small_scale_model_error.perturbSim(ensemble.particles[p],\
@@ -556,8 +562,8 @@ class IEWPFOcean:
             coarse_cell_id_x = np.int32(int(np.floor(observed_drifter_position[0]/self.coarse_dx)))
             coarse_cell_id_y = np.int32(int(np.floor(observed_drifter_position[1]/self.coarse_dy)))
             
-            # 1) Solve linear problem
-            e = np.dot(self.S_host, local_innovation)
+            # 1) Solve linear problem (manipulated)
+            e = np.dot(self.S_manipulated, local_innovation)
             
             self.halfTheKalmanGainKernel.prepared_async_call(self.global_size_Kalman,
                                                              self.local_size_Kalman,
@@ -570,7 +576,9 @@ class IEWPFOcean:
                                                              np.float32(e[0,0]), np.float32(e[0,1]),
                                                              sim.small_scale_model_error.random_numbers.data.gpudata,
                                                              sim.small_scale_model_error.random_numbers.pitch)
-            
+                        
+            # 1) Solve linear problem (non-manipulated)
+            e = np.dot(self.S_host, local_innovation)
             phi += local_innovation[0]*e[0,0] + local_innovation[1]*e[0,1]
             
             # The final step of the Kalman gain is to obtain geostrophic balance on the obtained field.
@@ -843,7 +851,7 @@ class IEWPFOcean:
             print(params)
             raise
         
-    def _createS(self, ensemble):
+    def _createS(self, ensemble, manipulate=False):
         """
         Create the 2x2 matrix S = (HQH^T + R)^-1
 
@@ -955,6 +963,12 @@ class IEWPFOcean:
         if self.debug: print ("ensemble.observation_cov\n", ensemble.getObservationCov())
         S_inv = HQHT + ensemble.getObservationCov()
         if self.debug: print ("S_inv\n", S_inv)
+        
+        if manipulate:
+            S_inv = HQHT #+ 20*ensemble.getObservationCov()
+            if self.debug: print("Manipulated S_inv to be equal to HQH^T")
+            if self.debug: print(S_inv)
+        
         S = np.linalg.inv(S_inv)
         if self.debug: print( "S\n", S)
         return S.astype(np.float32, order='C')
