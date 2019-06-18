@@ -126,7 +126,7 @@ class IEWPFOcean:
         
         self.debug = True
         self.S_manipulated = self._createS(ensemble, manipulate=True)
-        self.variance_manipulation_factor = 0.2 ####  MANIPULATING
+        self.variance_manipulation_factor = 5 ####  MANIPULATING
         self.debug = False
         
         # Create constant localized SVD matrix and copy to the GPU.
@@ -965,7 +965,7 @@ class IEWPFOcean:
         if self.debug: print ("S_inv\n", S_inv)
         
         if manipulate:
-            S_inv = HQHT #+ 20*ensemble.getObservationCov()
+            S_inv = HQHT + 10*ensemble.getObservationCov()
             if self.debug: print("Manipulated S_inv to be equal to HQH^T")
             if self.debug: print(S_inv)
         
